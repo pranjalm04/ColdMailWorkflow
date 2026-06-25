@@ -1,0 +1,4 @@
+# Desktop UI deps (kept separate from the core CLI deps).
+# The core package (cold_mail_workflow) must be installed too: pip install -e .
+streamlit>=1.40
+faster-whisper>=1.0

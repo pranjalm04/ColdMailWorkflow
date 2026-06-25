@@ -1,0 +1,15 @@
+pyproject.toml
+src/cold_mail_workflow/__init__.py
+src/cold_mail_workflow/__main__.py
+src/cold_mail_workflow/config.py
+src/cold_mail_workflow/generate.py
+src/cold_mail_workflow/ingest.py
+src/cold_mail_workflow/mailer.py
+src/cold_mail_workflow/models.py
+src/cold_mail_workflow/pipeline.py
+src/cold_mail_workflow/tracker.py
+src/cold_mail_workflow.egg-info/PKG-INFO
+src/cold_mail_workflow.egg-info/SOURCES.txt
+src/cold_mail_workflow.egg-info/dependency_links.txt
+src/cold_mail_workflow.egg-info/requires.txt
+src/cold_mail_workflow.egg-info/top_level.txt

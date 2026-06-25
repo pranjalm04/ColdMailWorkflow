@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+
+.env
+credentials/
+output/
+
+# Real recruiter contact data (PII) — keep out of the repo
+data/*.csv
+data/*.xlsx
+
+# Personal resume binary
+resume/
+
+.DS_Store
+.idea/
+.vscode/
+.claude/
