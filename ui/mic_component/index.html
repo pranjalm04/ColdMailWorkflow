@@ -1,0 +1,144 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  .wrap { display: flex; flex-direction: column; align-items: center; gap: 10px;
+          font-family: "Source Sans Pro", system-ui, sans-serif; padding: 12px 0; }
+  .circle {
+    width: 190px; height: 190px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 80px; cursor: pointer; user-select: none;
+    background: #3a3f44; color: #fff; border: none; outline: none;
+    transition: background .15s ease, transform .1s ease;
+  }
+  .circle:active { transform: scale(0.97); }
+  .armed { background: #128a3e; }
+  .live  { background: #1db954; animation: pulse 0.7s infinite; }
+  .busy  { background: #d49a00; animation: pulse 1.1s infinite; }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(29,185,84,.65); }
+    70%  { box-shadow: 0 0 0 34px rgba(29,185,84,0); }
+    100% { box-shadow: 0 0 0 0 rgba(29,185,84,0); }
+  }
+  .hint { color: #9aa0a6; font-size: 14px; min-height: 18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <button id="circle" class="circle" aria-label="Microphone">🎤</button>
+  <div id="hint" class="hint">Tap to talk</div>
+</div>
+
+<script>
+function send(type, data) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data), "*");
+}
+const Streamlit = {
+  ready: () => send("streamlit:componentReady", { apiVersion: 1 }),
+  height: (h) => send("streamlit:setFrameHeight", { height: h }),
+  value: (v) => send("streamlit:setComponentValue", { value: v, dataType: "json" }),
+};
+
+let SILENCE_MS = 1200;
+window.addEventListener("message", (e) => {
+  if (e.data && e.data.type === "streamlit:render") {
+    const args = e.data.args || {};
+    if (typeof args.silence_ms === "number") SILENCE_MS = args.silence_ms;
+  }
+});
+
+const circle = document.getElementById("circle");
+const hint = document.getElementById("hint");
+let recording = false;
+
+function setState(cls, text) {
+  circle.className = "circle" + (cls ? " " + cls : "");
+  if (text !== undefined) hint.textContent = text;
+}
+
+async function start() {
+  if (recording) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    setState("", "Mic blocked: " + err.message);
+    return;
+  }
+  recording = true;
+  setState("armed", "Listening… speak now");
+
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const source = ctx.createMediaStreamSource(stream);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 1024;
+  source.connect(analyser);
+  const buf = new Float32Array(analyser.fftSize);
+
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus" : "";
+  const recOpts = { audioBitsPerSecond: 128000 };
+  if (mime) recOpts.mimeType = mime;
+  const rec = new MediaRecorder(stream, recOpts);
+  const chunks = [];
+  rec.ondataavailable = (ev) => { if (ev.data.size > 0) chunks.push(ev.data); };
+
+  let noise = null, speech = false, silenceMs = 0, elapsed = 0;
+  const tick = 50;
+
+  const timer = setInterval(() => {
+    analyser.getFloatTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i];
+    const rms = Math.sqrt(sum / buf.length);
+    if (noise === null) noise = rms;
+    const threshold = Math.max(noise * 2.2, 0.012);
+    if (rms > threshold) {
+      speech = true; silenceMs = 0;
+      setState("live", "Listening…");
+    } else if (speech) {
+      silenceMs += tick;
+    } else {
+      noise = 0.9 * noise + 0.1 * rms;
+    }
+    elapsed += tick;
+    if ((speech && silenceMs >= SILENCE_MS) || elapsed >= 15000) {
+      clearInterval(timer);
+      stop(rec, ctx, stream);
+    }
+  }, tick);
+
+  rec.onstop = async () => {
+    setState("busy", "Transcribing…");
+    const blob = new Blob(chunks, { type: mime || "audio/webm" });
+    const b64 = await blobToBase64(blob);
+    recording = false;
+    Streamlit.value({ id: Date.now(), audio: b64, mime: blob.type });
+    setState("", "Tap to talk");
+  };
+
+  rec.start();
+}
+
+function stop(rec, ctx, stream) {
+  try { rec.stop(); } catch (e) {}
+  try { ctx.close(); } catch (e) {}
+  stream.getTracks().forEach((t) => t.stop());
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onloadend = () => resolve(r.result.split(",")[1]);
+    r.readAsDataURL(blob);
+  });
+}
+
+circle.addEventListener("click", start);
+
+Streamlit.ready();
+Streamlit.height(250);
+</script>
+</body>
+</html>
