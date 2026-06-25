@@ -3,15 +3,23 @@ __pycache__/
 *.pyc
 
 .env
-credentials/
-output/
 
-# Real recruiter contact data (PII) — keep out of the repo
-data/*.csv
-data/*.xlsx
+# Keep the data/, credentials/, and output/ folders tracked (so the repo is
+# self-documenting about what's required) but ignore everything inside them —
+# they hold PII, secrets, and generated state that must never be committed.
+# The .gitkeep placeholders are the only tracked files in each.
+data/*
+!data/.gitkeep
 
-# Personal resume binary
-resume/
+credentials/*
+!credentials/.gitkeep
+
+output/*
+!output/.gitkeep
+
+# Personal resume binary — keep the folder, ignore its contents
+resume/*
+!resume/.gitkeep
 
 .DS_Store
 .idea/
