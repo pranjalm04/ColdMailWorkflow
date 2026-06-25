@@ -44,6 +44,22 @@ Paths and `MODEL` have defaults in `src/cold_mail_workflow/config.py` and can be
 
 Only the `gmail.send` scope is requested.
 
+## Required folders
+
+The repo ships four empty folders (each kept by a `.gitkeep` placeholder). Their **contents are
+gitignored** — they hold PII, secrets, and generated state that must never be committed — but the
+folders themselves are tracked so you know what to create and where. Fill them in as follows:
+
+| folder         | what it's for                                  | what you put in it |
+|----------------|------------------------------------------------|--------------------|
+| `data/`        | **Input** — your recruiter contact lists       | One or more `.csv` / `.xlsx` files (any schema; columns are matched by alias — see [Inputs](#inputs)). Point at a specific file with `--contacts data/yourfile.csv`, or drop several in and the default run reads them all. |
+| `credentials/` | **Secrets** — Google OAuth for Gmail send      | `credentials.json` (the OAuth Desktop client secret you download from Google Cloud). `token.json` is created automatically on your first `--send` and cached here. |
+| `resume/`      | **Input** — the résumé attached to every email | Your résumé PDF. The default path is `resume/Pranjal_Mestry_resume.pdf`; override it with `RESUME_PATH` in `.env`. |
+| `output/`      | **State** — the append-only send tracker       | Nothing by hand. `sent_tracker.csv` is written here on each successful send and is what makes re-runs idempotent (a contact is never emailed twice). |
+
+> Keep these folders out of source control's way: never commit anything inside them except the
+> `.gitkeep`. The provided `.gitignore` already enforces this.
+
 ## Inputs
 
 **`cv.md`** — your CV in markdown. The single source of truth: generated emails may only cite
@@ -130,4 +146,5 @@ deeper engineer-to-engineer email; omit it (or a recruiter title) for the recrui
 - The dedup check runs before generation and before sending — never sends a duplicate.
 - Sends are rate-limited (`SEND_DELAY_SECONDS`) and capped per run (`MAX_SENDS_PER_RUN`).
 - Generated content is grounded in `cv.md`; the prompt forbids fabricating experience or numbers.
-- `.env`, `credentials/`, and `output/` are gitignored.
+- `.env` is gitignored; the `data/`, `credentials/`, `resume/`, and `output/` folders are tracked
+  but their contents are gitignored (only the `.gitkeep` placeholders are committed). See [Required folders](#required-folders).
