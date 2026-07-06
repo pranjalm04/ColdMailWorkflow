@@ -140,10 +140,29 @@ python -m cold_mail_workflow --send --to jane.doe@datadoghq.com --company "Datad
 `--title` drives technical depth here too: an engineering-manager / tech-lead title gets the
 deeper engineer-to-engineer email; omit it (or a recruiter title) for the recruiter-friendly one.
 
+### Do-not-contact list (permanent suppression)
+
+Permanently exclude a person from **all** future sends and follow-ups. Suppression is keyed on the
+email address (the human), so it blocks every company/role they appear under, and matches **any** of
+their addresses (`all_emails`). A suppressed person is skipped before generation and gets **no
+tracker row**. The list lives in `output/suppressed.csv` (append-only, gitignored).
+
+```bash
+# add one or more addresses to the do-not-contact list (sends nothing)
+python -m cold_mail_workflow --suppress jane.doe@datadoghq.com --reason "asked to stop"
+python -m cold_mail_workflow --suppress a@x.com b@y.com
+
+# review the current list
+python -m cold_mail_workflow --list-suppressed
+```
+
+Once added, every `--send` and `--followup` run silently skips that person.
+
 ## Safety
 
 - Dry-run is the default; real sending requires `--send`.
 - The dedup check runs before generation and before sending — never sends a duplicate.
+- A permanent do-not-contact list (`--suppress`) skips chosen people in every send and follow-up.
 - Sends are rate-limited (`SEND_DELAY_SECONDS`) and capped per run (`MAX_SENDS_PER_RUN`).
 - Generated content is grounded in `cv.md`; the prompt forbids fabricating experience or numbers.
 - `.env` is gitignored; the `data/`, `credentials/`, `resume/`, and `output/` folders are tracked

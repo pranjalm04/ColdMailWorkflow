@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from pathlib import Path
 
-from . import generate, ingest, mailer, tracker
+from . import generate, ingest, mailer, suppress, tracker
 from .config import (
     CONTACTS_PATH,
     CV_PATH,
@@ -173,10 +173,16 @@ def run_followups(
     service = mailer.build_service() if send else None
     sent_this_run = 0
     new_processed = 0
+    blocked = suppress.load()
 
     for target in targets:
         key = target.dedup_key
         contact = target.contact
+
+        if blocked and any(suppress.normalize(e) in blocked for e in contact.recipients):
+            stats.skipped += 1
+            logger.info("Skip (suppressed / do-not-contact): %s / %s -> %s", contact.company, contact.role, contact.recruiter_email)
+            continue
 
         if tracker.already_followed_up(key):
             stats.skipped += 1
@@ -304,9 +310,15 @@ def run(
     service = mailer.build_service() if send else None
     sent_this_run = 0
     new_processed = 0
+    blocked = suppress.load()
 
     for contact in contacts:
         key = tracker.dedup_key(contact)
+
+        if blocked and any(suppress.normalize(e) in blocked for e in contact.recipients):
+            stats.skipped += 1
+            logger.info("Skip (suppressed / do-not-contact): %s / %s -> %s", contact.company, contact.role, contact.recruiter_email)
+            continue
 
         if tracker.already_sent(key):
             stats.skipped += 1
