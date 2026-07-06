@@ -1,8 +1,10 @@
 import base64
 import hashlib
 import os
+import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -10,8 +12,9 @@ import streamlit.components.v1 as components
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import voice
-from cold_mail_workflow import config, generate, ingest, mailer, pipeline, tracker
-from cold_mail_workflow.models import Contact, TrackerRecord
+from cold_mail_workflow import apollo, config, generate, ingest, mailer, pipeline, suppress, tracker
+from cold_mail_workflow.__main__ import _load_forward_email, _save_contacts_csv
+from cold_mail_workflow.models import Contact, GeneratedEmail, TrackerRecord
 
 st.set_page_config(page_title="ColdMailWorkflow", page_icon="✉️", layout="wide")
 
@@ -65,6 +68,20 @@ def send_single(contact, email):
     return "sent", msg_id
 
 
+def show_stats(stats):
+    st.success(
+        f"Done — total {stats.total}, generated {stats.generated}, "
+        f"sent {stats.sent}, skipped {stats.skipped}, failed {stats.failed}"
+    )
+    if stats.errors:
+        st.error("\n".join(stats.errors))
+
+
+def _q(value):
+    s = str(value)
+    return f'"{s}"' if (" " in s) else s
+
+
 def current_contact():
     return Contact(
         company=st.session_state.f_company.strip(),
@@ -105,7 +122,9 @@ def apply_voice_fields(fields):
 
 st.title("✉️ ColdMailWorkflow")
 
-tab_compose, tab_batch, tab_tracker, tab_status = st.tabs(["Compose", "Batch", "Tracker", "Status"])
+tab_compose, tab_batch, tab_run, tab_tracker, tab_status = st.tabs(
+    ["Compose", "Batch", "Run", "Tracker", "Status"]
+)
 
 with tab_compose:
     mic = _MIC(silence_ms=1200, default=None, key="big_mic")
@@ -244,6 +263,181 @@ with tab_batch:
                 st.error("\n".join(stats.errors))
         except Exception as exc:
             st.error(f"Batch failed: {exc}")
+
+with tab_run:
+    st.subheader("Run workflow")
+    st.caption("Full control over the pipeline — mirrors every command-line option.")
+
+    mode = st.radio(
+        "Workflow",
+        ["Batch (contacts file)", "Follow-ups", "Single recipient", "Forward fixed email"],
+        horizontal=True,
+        key="run_mode",
+    )
+    live = st.radio(
+        "Action",
+        ["Dry-run (preview, nothing sent)", "Live send"],
+        key="run_action",
+    ).startswith("Live")
+
+    o1, o2, o3 = st.columns(3)
+    with o1:
+        limit = int(st.number_input("Scan limit (--limit, 0 = all)", min_value=0, value=0, key="run_limit"))
+    with o2:
+        max_new = int(st.number_input("Max new (--max-new, 0 = no cap)", min_value=0, value=0, key="run_max_new"))
+    with o3:
+        company = st.text_input("Company filter (--company)", key="run_company").strip()
+
+    contacts_path = st.text_input("Contacts file/dir (--contacts)", value=str(config.CONTACTS_PATH), key="run_contacts").strip()
+    role = st.text_input("Default role (--role)", value=config.DEFAULT_ROLE, key="run_role").strip() or config.DEFAULT_ROLE
+
+    # Mode-specific fields
+    to = rname = scompany = rtitle = rnotes = ""
+    fpath = fsubject = ""
+    if mode == "Single recipient":
+        st.markdown("**Single-record fields**")
+        s1, s2 = st.columns(2)
+        with s1:
+            to = st.text_input("Recruiter email (--to) *", key="run_to").strip()
+            rname = st.text_input("Recruiter name (--recruiter-name)", key="run_rname").strip()
+        with s2:
+            scompany = st.text_input("Company (for this record)", key="run_scompany").strip()
+            rtitle = st.text_input("Recipient title (--title)", key="run_rtitle").strip()
+        rnotes = st.text_area("Notes (--notes)", key="run_rnotes", height=80).strip()
+    elif mode == "Forward fixed email":
+        st.markdown("**Forward a fixed email to the batch (generation skipped)**")
+        fpath = st.text_input("Email file path (--forward-email)", key="run_fpath").strip()
+        fsubject = st.text_input("Subject override (--subject)", key="run_fsubject").strip()
+
+    # Equivalent CLI command (informational)
+    argv = ["python -m cold_mail_workflow"]
+    if mode == "Follow-ups":
+        argv.append("--followup")
+    if live:
+        argv.append("--send")
+    if limit > 0:
+        argv.append(f"--limit {limit}")
+    if max_new > 0:
+        argv.append(f"--max-new {max_new}")
+    if mode == "Single recipient":
+        if to:
+            argv.append(f"--to {to}")
+        if scompany:
+            argv.append(f"--company {_q(scompany)}")
+        if rname:
+            argv.append(f"--recruiter-name {_q(rname)}")
+        if rtitle:
+            argv.append(f"--title {_q(rtitle)}")
+        if rnotes:
+            argv.append(f"--notes {_q(rnotes)}")
+    else:
+        if company:
+            argv.append(f"--company {_q(company)}")
+    if mode == "Forward fixed email":
+        if fpath:
+            argv.append(f"--forward-email {_q(fpath)}")
+        if fsubject:
+            argv.append(f"--subject {_q(fsubject)}")
+    if role and role != config.DEFAULT_ROLE and mode != "Follow-ups":
+        argv.append(f"--role {_q(role)}")
+    if contacts_path and contacts_path != str(config.CONTACTS_PATH):
+        argv.append(f"--contacts {_q(contacts_path)}")
+    st.code(" ".join(argv), language="bash")
+
+    confirm = st.checkbox("I confirm a LIVE send", key="run_confirm") if live else True
+    if st.button("Run workflow", type="primary", disabled=live and not confirm, key="run_btn"):
+        try:
+            if mode == "Follow-ups":
+                fk = {"send": live, "contacts_path": Path(contacts_path)}
+                if limit > 0:
+                    fk["limit"] = limit
+                if max_new > 0:
+                    fk["max_new"] = max_new
+                if company:
+                    fk["company"] = company
+                with st.spinner("Running follow-ups…"):
+                    stats = pipeline.run_followups(**fk)
+                show_stats(stats)
+            else:
+                kwargs = {"send": live, "contacts_path": Path(contacts_path), "role": role}
+                if limit > 0:
+                    kwargs["limit"] = limit
+                if max_new > 0:
+                    kwargs["max_new"] = max_new
+                if mode == "Single recipient":
+                    if "@" not in to:
+                        st.error("Enter a valid --to email.")
+                        st.stop()
+                    kwargs["contact"] = Contact(
+                        company=scompany,
+                        role=role,
+                        recruiter_email=to,
+                        recruiter_name=rname,
+                        title=rtitle,
+                        notes=rnotes,
+                    )
+                else:
+                    if company:
+                        kwargs["company"] = company
+                    if mode == "Forward fixed email":
+                        if not fpath or not Path(fpath).exists():
+                            st.error("Provide a valid --forward-email file path.")
+                            st.stop()
+                        kwargs["forward_email"] = _load_forward_email(Path(fpath), fsubject or None)
+                with st.spinner("Running…" if not live else "Sending… (this can take a few minutes)"):
+                    stats = pipeline.run(**kwargs)
+                show_stats(stats)
+        except Exception as exc:
+            st.error(f"Run failed: {exc}")
+
+    st.divider()
+    with st.expander("Apollo recruiter lookup (--apollo-company)"):
+        ac = st.text_input("Company (--apollo-company)", key="ap_company").strip()
+        a1, a2 = st.columns(2)
+        with a1:
+            ap_limit = int(st.number_input("Limit (--apollo-limit)", min_value=1, value=10, key="ap_limit"))
+        with a2:
+            ap_unlock = st.checkbox("Unlock emails (--apollo-unlock, consumes credits)", key="ap_unlock")
+        ap_save = st.text_input("Save to CSV (--apollo-save, optional)", key="ap_save").strip()
+        if st.button("Look up recruiters", key="ap_btn", disabled=not ac):
+            try:
+                with st.spinner("Querying Apollo…"):
+                    recs = apollo.search_recruiters(ac, limit=ap_limit, role=role, unlock=ap_unlock)
+                if not recs:
+                    st.info("No recruiters found.")
+                else:
+                    st.dataframe(
+                        [
+                            {"name": c.recruiter_name, "title": c.title, "email": c.recruiter_email or "(locked)"}
+                            for c in recs
+                        ],
+                        width="stretch",
+                    )
+                    if ap_save:
+                        _save_contacts_csv(Path(ap_save), recs)
+                        st.success(f"Saved {len(recs)} recruiter(s) to {ap_save}")
+            except Exception as exc:
+                st.error(f"Apollo lookup failed: {exc}")
+
+    with st.expander("Do-not-contact list (--suppress / --list-suppressed)"):
+        sup_emails = st.text_input("Emails to suppress (space/comma separated)", key="sup_emails").strip()
+        sup_reason = st.text_input("Reason (--reason)", key="sup_reason").strip()
+        b1, b2 = st.columns(2)
+        if b1.button("Add to do-not-contact", key="sup_add", disabled=not sup_emails):
+            emails = [e for e in re.split(r"[\s,;]+", sup_emails) if e]
+            added = suppress.add(emails, reason=sup_reason)
+            if added:
+                st.success(f"Suppressed: {', '.join(added)}")
+            else:
+                st.info("Nothing added (already suppressed or invalid).")
+        if b2.button("Show list", key="sup_list"):
+            blocked = sorted(suppress.load())
+            if blocked:
+                st.write(f"{len(blocked)} suppressed address(es):")
+                st.dataframe([{"email": e} for e in blocked], width="stretch")
+            else:
+                st.info("Do-not-contact list is empty.")
+
 
 with tab_tracker:
     st.subheader("Sent tracker")

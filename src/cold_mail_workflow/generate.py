@@ -103,13 +103,28 @@ def _is_technical_audience(title: str) -> bool:
     return any(p in t for p in TECH_TITLE_PATTERNS)
 
 
-def _build_user_prompt(contact: Contact, cv_text: str, followup: bool = False, prior_subject: str = "") -> str:
+def _build_system_blocks(cv_text: str, followup: bool = False) -> list[dict]:
+    """System prompt + CV as cacheable content blocks.
+
+    Both blocks are identical across every contact in a run, so a cache
+    breakpoint on the CV block lets subsequent calls reuse the whole
+    prompt-prefix (instructions + CV) at ~0.1x input cost. The per-contact
+    target details live in the user message, after the breakpoint.
+    """
+    return [
+        {"type": "text", "text": FOLLOWUP_SYSTEM_PROMPT if followup else SYSTEM_PROMPT},
+        {
+            "type": "text",
+            "text": f"=== CV (source of truth) ===\n{cv_text}",
+            "cache_control": {"type": "ephemeral"},
+        },
+    ]
+
+
+def _build_user_prompt(contact: Contact, followup: bool = False, prior_subject: str = "") -> str:
     greeting = contact.recruiter_name or "(none — use 'Hi there')"
     audience = "TECHNICAL" if _is_technical_audience(contact.title) else "NON-TECHNICAL"
     lines = [
-        "=== CV (source of truth) ===",
-        cv_text,
-        "",
         "=== Target ===",
         f"Company: {contact.company}",
         f"Target role: {contact.role}",
@@ -159,6 +174,25 @@ def _extract_json(text: str) -> dict:
         raise
 
 
+def _log_cache_usage(usage) -> None:
+    """Report prompt-cache activity so the savings are visible per contact.
+
+    On the first call of a run the prefix is written (cache_creation > 0); on
+    subsequent calls it should be read (cache_read > 0) at ~0.1x input cost. If
+    cache_read stays 0 across a batch, the cached prefix is below the model's
+    minimum cacheable size (4096 tokens on Haiku 4.5) or is being invalidated.
+    """
+    created = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    uncached = getattr(usage, "input_tokens", 0) or 0
+    logger.info(
+        "Prompt cache: %d read, %d written, %d uncached input tokens",
+        read,
+        created,
+        uncached,
+    )
+
+
 def compose(contact: Contact, cv_text: str, followup: bool = False, prior_subject: str = "") -> GeneratedEmail:
     if not ANTHROPIC_API_KEY:
         raise RuntimeError("ANTHROPIC_API_KEY is not set")
@@ -167,9 +201,11 @@ def compose(contact: Contact, cv_text: str, followup: bool = False, prior_subjec
     response = client.messages.create(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=FOLLOWUP_SYSTEM_PROMPT if followup else SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": _build_user_prompt(contact, cv_text, followup, prior_subject)}],
+        system=_build_system_blocks(cv_text, followup),
+        messages=[{"role": "user", "content": _build_user_prompt(contact, followup, prior_subject)}],
     )
+
+    _log_cache_usage(response.usage)
 
     raw = "".join(block.text for block in response.content if block.type == "text")
     data = _extract_json(raw)

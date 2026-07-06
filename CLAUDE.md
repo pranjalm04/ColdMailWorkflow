@@ -31,7 +31,7 @@ batch CLI, not a service.
 ColdMailWorkflow/
 ├── CLAUDE.md
 ├── README.md
-├── requirements.txt
+├── pyproject.toml              # deps + build config (single source of truth)
 ├── .env.example
 ├── cv.md                       # INPUT: owner's CV, markdown. Source of truth for skills.
 ├── data/
@@ -48,6 +48,7 @@ ColdMailWorkflow/
     ├── models.py               # Contact, GeneratedEmail, TrackerRecord dataclasses
     ├── ingest.py               # read_contacts() -> list[Contact]
     ├── tracker.py              # load, dedup_key(), already_sent(), append()
+    ├── suppress.py             # permanent do-not-contact list (by email): load/add/is_suppressed
     ├── generate.py             # Anthropic content + metadata generation
     ├── mailer.py               # Gmail auth + send
     └── pipeline.py             # orchestration: ingest -> dedup -> generate -> send -> track
@@ -100,6 +101,14 @@ timestamp,dedup_key,recruiter_email,company,role,subject,gmail_message_id,status
 - Only rows with `status == sent` count for deduplication.
 - Never rewrite or delete existing rows. Appends only.
 
+### Suppression — `output/suppressed.csv`
+
+Append-only do-not-contact list. Header: `timestamp,email,reason`. Keyed on the **email address**
+(the person), not on `dedup_key`, so it blocks them across every company/role and matches any of
+their `all_emails`. `pipeline.run` and `pipeline.run_followups` skip a contact if any of its
+addresses is suppressed — before generation, with no tracker row written. Managed via
+`--suppress` / `--list-suppressed`; logic lives in `suppress.py`.
+
 ### Dedup key
 
 ```python
@@ -114,9 +123,9 @@ place** (`tracker.dedup_key`) so the rule is changed in exactly one spot.
 
 ## Anthropic SDK usage (`generate.py`)
 
-- Default model: **`claude-sonnet-4-6`** — strong quality at low cost, right for a high-volume
-  mailing batch. For maximum quality on a small high-stakes batch, the model is configurable
-  via `config.MODEL` (e.g. `claude-opus-4-8`, or `claude-fable-5` for the most capable).
+- Default model: **`claude-haiku-4-5-20251001`** — fast and low cost, right for a high-volume
+  mailing batch. For higher quality on a small high-stakes batch, the model is configurable
+  via `config.MODEL` (e.g. `claude-sonnet-4-6`, `claude-opus-4-8`, or `claude-fable-5` for the most capable).
 - The API key comes from the `ANTHROPIC_API_KEY` env var; never hardcode it.
 - The generator produces **content and metadata together** as structured JSON. Prompt the model
   to return *only* a JSON object, then parse it safely (strip code fences, `json.loads`,
@@ -172,7 +181,7 @@ can be overridden via env. Never commit `.env`, `credentials/`, or `output/`.
 ```bash
 # setup
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e .            # installs the package + deps from pyproject.toml
 
 # dry run (default) — generates and prints emails, sends nothing
 python -m cold_mail_workflow

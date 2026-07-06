@@ -4,7 +4,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import apollo, pipeline
+from . import apollo, pipeline, suppress
 from .config import CONTACTS_PATH, DEFAULT_ROLE
 from .models import Contact, GeneratedEmail
 
@@ -130,6 +130,27 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="In --apollo-company mode, also write the recruiters to this CSV path (ingest-compatible, "
         "so the normal pipeline can then email them).",
     )
+    parser.add_argument(
+        "--suppress",
+        type=str,
+        nargs="+",
+        default=None,
+        metavar="EMAIL",
+        help="Permanently add one or more email addresses to the do-not-contact list "
+        "(output/suppressed.csv). Suppressed people are skipped by every future send AND follow-up, "
+        "and get no tracker row. Does not send anything. Combine with --reason.",
+    )
+    parser.add_argument(
+        "--reason",
+        type=str,
+        default="",
+        help="Optional note stored alongside a --suppress entry (e.g. 'asked to stop').",
+    )
+    parser.add_argument(
+        "--list-suppressed",
+        action="store_true",
+        help="Print the current do-not-contact list and exit.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug logging.")
     return parser.parse_args(argv)
 
@@ -175,6 +196,24 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     log = logger
+
+    if args.list_suppressed:
+        blocked = sorted(suppress.load())
+        if not blocked:
+            print("Do-not-contact list is empty.")
+        else:
+            print(f"\nDo-not-contact list ({len(blocked)} address(es)):\n")
+            for email in blocked:
+                print(f"  {email}")
+        return 0
+
+    if args.suppress:
+        added = suppress.add(args.suppress, reason=args.reason)
+        if added:
+            log.info("Added %d address(es) to the do-not-contact list: %s", len(added), ", ".join(added))
+        else:
+            log.info("Nothing added — address(es) already suppressed or invalid.")
+        return 0
 
     if args.apollo_company:
         return _run_apollo(
